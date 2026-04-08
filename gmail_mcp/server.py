@@ -54,9 +54,10 @@ async def _lifespan(_app: FastMCP):
 mcp = FastMCP(
     "gmail",
     instructions=(
-        "Gmail administration via Google Gmail API v1. "
-        "OAuth tokens are obtained at server startup (browser) or via `gmail-mcp-setup`. "
-        "Message bodies use RFC 2822; `raw` must be base64url-encoded for API send operations."
+        "Gmail via Gmail API v1. Default OAuth scope is gmail.modify (read/write mailbox, labels, "
+        "threads, drafts, send). Account settings tools (filters, forwarding, send-as, watch) need "
+        "GMAIL_MCP_SCOPE_MODE=full. Tokens from `gmail-mcp-setup` or server startup; raw send payloads "
+        "are base64url-encoded RFC 2822."
     ),
     lifespan=_lifespan,
 )

@@ -11,7 +11,15 @@ from gmail_mcp.config import client_secret_path, state_dir, token_path
 
 
 def main() -> None:
-    p = argparse.ArgumentParser(description="Authenticate Gmail MCP with Google OAuth (saves token for the server).")
+    p = argparse.ArgumentParser(
+        description="Authenticate Gmail MCP with Google OAuth (saves token for the server).",
+        epilog=(
+            "OAuth scopes: default is mailbox-only (gmail.modify). "
+            "Set GMAIL_MCP_SCOPE_MODE=full for filters/forwarding/send-as/watch tools, "
+            "or GMAIL_MCP_SCOPES to a comma-separated list of scope URLs."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     p.add_argument(
         "--no-browser",
         action="store_true",
