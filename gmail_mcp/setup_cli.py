@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import argparse
-import shlex
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -60,24 +60,89 @@ def _resolve_client_secret(cli_value: str | None) -> Path:
     if found:
         dest = state_dir() / "client_secret.json"
         shutil.copy(found, dest)
+        dest.chmod(0o600)
         print(f"Found credentials: {found.name}\nCopied to {dest}\n")
         return dest
 
     return default  # let the caller emit the "not found" error
 
 
-def _mcp_config(executable: str) -> str:
+# Available Gmail OAuth scopes with descriptions
+GMAIL_SCOPES = {
+    "https://www.googleapis.com/auth/gmail.readonly":    "Read all resources and their metadata — no write operations.",
+    "https://www.googleapis.com/auth/gmail.send":        "Send messages only; no read or modify access.",
+    "https://www.googleapis.com/auth/gmail.compose":     "Create, read, update, and delete drafts; send messages.",
+    "https://www.googleapis.com/auth/gmail.insert":      "Insert and import messages.",
+    "https://www.googleapis.com/auth/gmail.labels":      "Create, read, update, and delete labels only.",
+    "https://www.googleapis.com/auth/gmail.metadata":    "Read resources metadata including labels, history, profile; no message body.",
+    "https://www.googleapis.com/auth/gmail.modify":      "All read/write except settings (default mailbox mode).",
+    "https://mail.google.com/":                          "Full account access including settings, filters, forwarding (full mode).",
+}
+
+
+def _print_scopes() -> None:
+    print("Available Gmail OAuth scope URLs:\n")
+    for url, desc in GMAIL_SCOPES.items():
+        print(f"  {url}")
+        print(f"    {desc}")
+    print(
+        "\nPre-defined modes:\n"
+        "  mailbox  →  gmail.modify (read/write messages, no account settings)\n"
+        "  full     →  mail.google.com (complete access)\n"
+        "  custom   →  specify exact scopes with --scopes URL1,URL2,...\n"
+    )
+
+
+def _mcp_config(executable: str, env: dict[str, str] | None = None) -> str:
     """Return a ready-to-paste MCP server JSON block."""
     import json
 
-    config = {
-        "mcpServers": {
-            "gmail": {
-                "command": executable,
-            }
-        }
-    }
+    server: dict = {"command": executable}
+    if env:
+        server["env"] = env
+    config = {"mcpServers": {"gmail": server}}
     return json.dumps(config, indent=2)
+
+
+def _claude_desktop_config_path() -> Path:
+    import platform
+    if platform.system() == "Darwin":
+        return Path.home() / "Library" / "Application Support" / "Claude" / "claude_desktop_config.json"
+    # Linux / Windows fallback (Claude Desktop uses XDG on Linux)
+    xdg = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+    return xdg / "Claude" / "claude_desktop_config.json"
+
+
+def _claude_code_config_path() -> Path:
+    return Path.home() / ".claude.json"
+
+
+def _install_mcp_config(
+    config_path: Path,
+    executable: str,
+    client_label: str,
+    env: dict[str, str] | None = None,
+) -> None:
+    """Merge the gmail MCP server entry into a JSON config file."""
+    import json
+
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+
+    existing: dict = {}
+    if config_path.is_file():
+        try:
+            existing = json.loads(config_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            print(f"Warning: {config_path} contains invalid JSON — it will be overwritten.", file=sys.stderr)
+
+    existing.setdefault("mcpServers", {})
+    server: dict = {"command": executable}
+    if env:
+        server["env"] = env
+    existing["mcpServers"]["gmail"] = server
+
+    config_path.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
+    print(f"gmail MCP server added to {client_label} config: {config_path}")
 
 
 def _find_executable() -> str:
@@ -98,9 +163,11 @@ def main() -> None:
     p = argparse.ArgumentParser(
         description="Authenticate Gmail MCP with Google OAuth (saves token for the server).",
         epilog=(
-            "OAuth scopes: default is mailbox-only (gmail.modify). "
-            "Set GMAIL_MCP_SCOPE_MODE=full for filters/forwarding/send-as/watch tools, "
-            "or GMAIL_MCP_SCOPES to a comma-separated list of scope URLs.\n\n"
+            "OAuth scope modes:\n"
+            "  mailbox  gmail.modify — read/write messages, labels, threads, drafts, send;\n"
+            "           does NOT include account settings (filters, forwarding, send-as) or watch.\n"
+            "  full     mail.google.com — complete access including account settings.\n"
+            "  custom   Specify exact scope URLs with --scopes (run --list-scopes to see options).\n\n"
             "Tip: if you just downloaded credentials from Google Cloud Console, run\n"
             "  gmail-mcp-setup\n"
             "without any arguments — it will find the file in ~/Downloads automatically."
@@ -151,7 +218,44 @@ def main() -> None:
         action="store_true",
         help="Remove the OAuth token from the macOS Keychain and exit.",
     )
+    p.add_argument(
+        "--install-claude-desktop",
+        action="store_true",
+        help="Write the MCP server config into the Claude Desktop config file.",
+    )
+    p.add_argument(
+        "--install-claude-code",
+        action="store_true",
+        help="Write the MCP server config into the Claude Code global config (~/.claude.json).",
+    )
+    p.add_argument(
+        "--scope",
+        choices=["mailbox", "full", "custom"],
+        default=None,
+        metavar="MODE",
+        help=(
+            "OAuth scope mode: mailbox (default, gmail.modify), full (mail.google.com), "
+            "or custom (specify URLs with --scopes). Run --list-scopes to see available scope URLs."
+        ),
+    )
+    p.add_argument(
+        "--scopes",
+        type=str,
+        default=None,
+        metavar="URL1,URL2,...",
+        help="Comma-separated Gmail API scope URLs for --scope custom.",
+    )
+    p.add_argument(
+        "--list-scopes",
+        action="store_true",
+        help="Print available Gmail OAuth scope URLs and exit.",
+    )
     args = p.parse_args()
+
+    # --list-scopes: print available scope URLs and exit
+    if args.list_scopes:
+        _print_scopes()
+        sys.exit(0)
 
     # --delete-keychain: remove stored secret and exit
     if args.delete_keychain:
@@ -171,12 +275,28 @@ def main() -> None:
             print("OAuth token removed from Keychain.")
         sys.exit(0)
 
+    # Resolve and validate --scope / --scopes, then expose as env vars so
+    # oauth_scopes() (called inside load_credentials) picks up the right set.
+    scope_env: dict[str, str] = {}
+    if args.scope == "custom":
+        if not args.scopes:
+            p.error("--scope custom requires --scopes URL1,URL2,... (run --list-scopes to see options)")
+        scope_env["GMAIL_MCP_SCOPES"] = args.scopes
+        os.environ["GMAIL_MCP_SCOPES"] = args.scopes
+    elif args.scope in ("full", "mailbox"):
+        scope_env["GMAIL_MCP_SCOPE_MODE"] = args.scope
+        os.environ["GMAIL_MCP_SCOPE_MODE"] = args.scope
+    elif args.scopes:
+        # --scopes without --scope custom: treat as custom implicitly
+        scope_env["GMAIL_MCP_SCOPES"] = args.scopes
+        os.environ["GMAIL_MCP_SCOPES"] = args.scopes
+
     # Positional arg overrides --client-secret when both are given
     cli_secret = args.client_secret_positional or args.client_secret
     secret = _resolve_client_secret(cli_secret)
     tok = Path(args.token) if args.token else token_path()
 
-    # --keychain: store the secret in Keychain (file still required to read from)
+    # --keychain: store the secret in Keychain and delete the plaintext file(s)
     if args.keychain:
         if not secret.is_file():
             print(
@@ -187,7 +307,14 @@ def main() -> None:
             sys.exit(1)
         keychain_save_client_secret(secret.read_text(encoding="utf-8"))
         print(f"Client secret stored in Keychain (service=gmail-mcp).")
-        print("You can now delete the JSON file — the server will use the Keychain entry.")
+        # Delete every plaintext copy — keychain is now the sole source of truth.
+        deleted: list[Path] = []
+        for candidate in {secret, client_secret_path()}:
+            if candidate.is_file():
+                candidate.unlink()
+                deleted.append(candidate)
+        for p in deleted:
+            print(f"Deleted credential file: {p}")
 
     if not args.keychain and not secret.is_file() and keychain_load_client_secret() is None:
         d = state_dir()
@@ -206,14 +333,31 @@ def main() -> None:
 
     load_credentials(client_secret_file=secret if secret.is_file() else None, token_file=tok, open_browser=not args.no_browser)
     if use_keychain_token():
-        print("Authentication complete. Token saved to macOS Keychain (service=gmail-mcp).")
+        print("Authentication complete. Token and client secret stored in macOS Keychain (service=gmail-mcp).")
+        print("Credential JSON files have been deleted — the server reads exclusively from the Keychain.")
     else:
         print(f"Authentication complete. Token saved to {tok}.")
+        print(
+            "\n\033[1;33mSECURITY WARNING\033[0m: OAuth credentials are stored as plaintext files on disk.\n"
+            f"  Token:         {tok}\n"
+            f"  Client secret: {client_secret_path()}\n"
+            "File permissions are set to 600 (owner read/write only), but these files\n"
+            "contain sensitive tokens. Consider restricting access further or using\n"
+            "an encrypted secrets manager for any shared or production environment.",
+            file=sys.stderr,
+        )
+
+    exe = _find_executable()
+
+    env_for_config = scope_env or None
+    if args.install_claude_desktop:
+        _install_mcp_config(_claude_desktop_config_path(), exe, "Claude Desktop", env=env_for_config)
+    if args.install_claude_code:
+        _install_mcp_config(_claude_code_config_path(), exe, "Claude Code", env=env_for_config)
 
     if args.print_config:
-        exe = _find_executable()
         print(f"\nAdd this to your MCP host config (Claude Desktop / Cursor / etc.):\n")
-        print(_mcp_config(exe))
-    else:
+        print(_mcp_config(exe, env=env_for_config))
+    elif not args.install_claude_desktop and not args.install_claude_code:
         print(f"\nStart the MCP server with:  gmail-mcp")
         print(f"Or run setup with config output:  gmail-mcp-setup --print-config")

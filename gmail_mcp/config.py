@@ -101,6 +101,7 @@ def state_dir() -> Path:
     base = os.environ.get("GMAIL_MCP_STATE_DIR", "").strip()
     path = Path(base) if base else _DEFAULT_STATE_DIR
     path.mkdir(parents=True, exist_ok=True)
+    path.chmod(0o700)
     return path
 
 

@@ -14,6 +14,7 @@ from gmail_mcp.config import (
     keychain_delete_token,
     keychain_load_client_secret,
     keychain_load_token,
+    keychain_save_client_secret,
     keychain_save_token,
     oauth_scopes,
     token_path,
@@ -50,8 +51,16 @@ def load_credentials(
     keychain_json = keychain_load_client_secret()
     if keychain_json:
         client_config = json.loads(keychain_json)
+        # macOS: delete any leftover plaintext file — keychain is the source of truth.
+        if use_keychain_token() and secret.is_file():
+            secret.unlink(missing_ok=True)
     elif secret.is_file():
-        client_config = json.loads(secret.read_text(encoding="utf-8"))
+        raw = secret.read_text(encoding="utf-8")
+        client_config = json.loads(raw)
+        # macOS: auto-migrate to keychain on first use and remove the plaintext file.
+        if use_keychain_token():
+            keychain_save_client_secret(raw)
+            secret.unlink(missing_ok=True)
     else:
         raise FileNotFoundError(
             f"OAuth client secret not found in Keychain or at {secret}. "
@@ -104,3 +113,4 @@ def _save_token(creds: Credentials, tok: Path) -> None:
     else:
         tok.parent.mkdir(parents=True, exist_ok=True)
         tok.write_text(token_json, encoding="utf-8")
+        tok.chmod(0o600)

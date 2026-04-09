@@ -2,22 +2,32 @@
 # gmail-mcp installer — macOS & Ubuntu
 # Creates a self-contained .venv inside the repo directory.
 # Usage:
-#   bash install.sh              # auto-detect (uv preferred, then pip)
-#   bash install.sh --no-setup   # install only, skip OAuth setup
-#   bash install.sh --headless   # OAuth via printed URL (no browser)
+#   bash install.sh                    # auto-detect (uv preferred, then pip)
+#   bash install.sh --no-setup         # install only, skip OAuth setup
+#   bash install.sh --headless         # OAuth via printed URL (no browser)
+#   bash install.sh --claude-desktop   # write MCP config to Claude Desktop
+#   bash install.sh --claude-code      # write MCP config to Claude Code (~/.claude.json)
+#   bash install.sh --no-client        # skip client config prompt
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV_DIR="$REPO_DIR/.venv"
 RUN_SETUP=1
 HEADLESS=0
+INSTALL_CLAUDE_DESKTOP=0
+INSTALL_CLAUDE_CODE=0
+# -1 = prompt interactively, 0 = skip, 1 = already set via flags
+CLIENT_MODE=-1
 
 for arg in "$@"; do
   case "$arg" in
-    --no-setup)  RUN_SETUP=0 ;;
-    --headless)  HEADLESS=1 ;;
+    --no-setup)        RUN_SETUP=0 ;;
+    --headless)        HEADLESS=1 ;;
+    --claude-desktop)  INSTALL_CLAUDE_DESKTOP=1; CLIENT_MODE=1 ;;
+    --claude-code)     INSTALL_CLAUDE_CODE=1;    CLIENT_MODE=1 ;;
+    --no-client)       CLIENT_MODE=0 ;;
     -h|--help)
-      sed -n '2,7p' "$0" | sed 's/^# //'
+      sed -n '2,10p' "$0" | sed 's/^# //'
       exit 0
       ;;
   esac
@@ -40,6 +50,11 @@ case "$OS" in
 esac
 
 info "Platform: $PLATFORM"
+if [[ "$PLATFORM" == "linux" ]]; then
+  warn "SECURITY: On Linux, OAuth credentials are stored as plaintext files"
+  warn "         (~/.config/gmail-mcp/). Permissions are set to 600/700, but"
+  warn "         consider an encrypted secrets manager for production/shared systems."
+fi
 
 # ── Python check ─────────────────────────────────────────────────────────────
 
@@ -116,6 +131,42 @@ _find_client_secret() {
   done
 }
 
+# ── Client config selection ───────────────────────────────────────────────────
+
+_prompt_client_selection() {
+  # Only prompt when stdin is a terminal
+  if [[ ! -t 0 ]]; then
+    return
+  fi
+  echo ""
+  echo "Configure MCP client automatically?"
+  echo "  1) Claude Desktop"
+  echo "  2) Claude Code  (~/.claude.json)"
+  echo "  3) Both"
+  echo "  4) Skip  (I'll edit the config manually)"
+  printf "Choice [1-4]: "
+  local choice
+  read -r choice
+  case "$choice" in
+    1) INSTALL_CLAUDE_DESKTOP=1 ;;
+    2) INSTALL_CLAUDE_CODE=1 ;;
+    3) INSTALL_CLAUDE_DESKTOP=1; INSTALL_CLAUDE_CODE=1 ;;
+    *) ;;  # skip
+  esac
+}
+
+_build_setup_flags() {
+  local flags=()
+  [[ "$HEADLESS" -eq 1 ]]              && flags+=(--no-browser)
+  [[ "$INSTALL_CLAUDE_DESKTOP" -eq 1 ]] && flags+=(--install-claude-desktop)
+  [[ "$INSTALL_CLAUDE_CODE" -eq 1 ]]    && flags+=(--install-claude-code)
+  # Print config only when neither auto-install target was chosen
+  if [[ "$INSTALL_CLAUDE_DESKTOP" -eq 0 && "$INSTALL_CLAUDE_CODE" -eq 0 ]]; then
+    flags+=(--print-config)
+  fi
+  echo "${flags[@]+"${flags[@]}"}"
+}
+
 if [[ "$RUN_SETUP" -eq 1 ]]; then
   SECRET=$(_find_client_secret)
   if [[ -z "$SECRET" ]]; then
@@ -130,12 +181,10 @@ if [[ "$RUN_SETUP" -eq 1 ]]; then
     echo ""
   else
     info "Found credentials: $SECRET"
+    [[ "$CLIENT_MODE" -eq -1 ]] && _prompt_client_selection
     info "Running OAuth setup…"
-    if [[ "$HEADLESS" -eq 1 ]]; then
-      "$GMAIL_MCP_SETUP_BIN" --no-browser --print-config
-    else
-      "$GMAIL_MCP_SETUP_BIN" --print-config
-    fi
+    # shellcheck disable=SC2046
+    "$GMAIL_MCP_SETUP_BIN" $(_build_setup_flags)
   fi
 else
   ok "Skipped OAuth setup (--no-setup). Run the following when ready:"

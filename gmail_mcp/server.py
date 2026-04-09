@@ -32,8 +32,23 @@ def _creds(ctx: Context) -> Credentials:
     return c  # type: ignore[return-value]
 
 
+_FULL_SCOPE = "https://mail.google.com/"
+
+
 def _svc(ctx: Context):
     return gmail_service(_creds(ctx))
+
+
+def _require_full_scope(ctx: Context) -> None:
+    """Raise a clear error when the stored token lacks the full mail scope."""
+    creds = _creds(ctx)
+    granted = set(creds.scopes or [])
+    if _FULL_SCOPE not in granted:
+        raise PermissionError(
+            "This operation requires the 'https://mail.google.com/' OAuth scope. "
+            "Re-authenticate with GMAIL_MCP_SCOPE_MODE=full (or run gmail-mcp-setup --scope full) "
+            "and restart the server."
+        )
 
 
 @asynccontextmanager
@@ -190,7 +205,8 @@ def gmail_untrash_message(ctx: Context, message_id: str) -> str:
 
 @mcp.tool(annotations=_write)
 def gmail_delete_message(ctx: Context, message_id: str) -> str:
-    """Permanently delete a message."""
+    """Permanently delete a message. Requires full mail scope (https://mail.google.com/)."""
+    _require_full_scope(ctx)
     _svc(ctx).users().messages().delete(userId="me", id=message_id).execute()
     return _json({"ok": True, "id": message_id})
 
@@ -214,7 +230,8 @@ def gmail_batch_modify_messages(
 
 @mcp.tool(annotations=_write)
 def gmail_batch_delete_messages(ctx: Context, message_ids: list[str]) -> str:
-    """Permanently delete multiple messages."""
+    """Permanently delete multiple messages. `message_ids` is a required list of Gmail message ID strings, e.g. ["18abc", "18def"]. Requires full mail scope (https://mail.google.com/)."""
+    _require_full_scope(ctx)
     _svc(ctx).users().messages().batchDelete(userId="me", body={"ids": message_ids}).execute()
     return _json({"ok": True, "count": len(message_ids)})
 
@@ -336,7 +353,8 @@ def gmail_untrash_thread(ctx: Context, thread_id: str) -> str:
 
 @mcp.tool(annotations=_write)
 def gmail_delete_thread(ctx: Context, thread_id: str) -> str:
-    """Permanently delete a thread."""
+    """Permanently delete a thread. Requires full mail scope (https://mail.google.com/)."""
+    _require_full_scope(ctx)
     _svc(ctx).users().threads().delete(userId="me", id=thread_id).execute()
     return _json({"ok": True, "id": thread_id})
 
