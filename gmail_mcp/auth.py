@@ -22,12 +22,21 @@ from gmail_mcp.config import (
 )
 
 _FULL_MAIL_SCOPE = "https://mail.google.com/"
+_GMAIL_SCOPE_PREFIX = "https://www.googleapis.com/auth/gmail"
 
 
 def _granted_covers_requested(granted: set[str], required: list[str]) -> bool:
-    """True if stored token can satisfy the OAuth scopes we need for this run."""
+    """True if stored token can satisfy the OAuth scopes we need for this run.
+
+    mail.google.com/ is a superset of all Gmail scopes but does NOT cover
+    non-Gmail scopes (e.g. Calendar).  Check those explicitly.
+    """
     if _FULL_MAIL_SCOPE in granted:
-        return True
+        non_gmail = {
+            s for s in required
+            if s != _FULL_MAIL_SCOPE and not s.startswith(_GMAIL_SCOPE_PREFIX)
+        }
+        return not (non_gmail - granted)
     return not (set(required) - granted)
 
 
@@ -85,7 +94,7 @@ def load_credentials(
     if creds and creds.valid and _granted_covers_requested(granted, scopes):
         return creds
 
-    if creds and creds.expired and creds.refresh_token:
+    if creds and creds.expired and creds.refresh_token and _granted_covers_requested(granted, scopes):
         creds.refresh(Request())
         _save_token(creds, tok)
         granted = set(creds.scopes or [])

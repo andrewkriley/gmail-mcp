@@ -205,7 +205,7 @@ def _mcp_config(executable: str, env: dict[str, str] | None = None) -> str:
     server: dict = {"command": executable}
     if env:
         server["env"] = env
-    config = {"mcpServers": {"gmail": server}}
+    config = {"mcpServers": {"google-mail-calendar": server}}
     return json.dumps(config, indent=2)
 
 
@@ -244,10 +244,10 @@ def _install_mcp_config(
     server: dict = {"command": executable}
     if env:
         server["env"] = env
-    existing["mcpServers"]["gmail"] = server
+    existing["mcpServers"]["google-mail-calendar"] = server
 
     config_path.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
-    print(f"gmail MCP server added to {client_label} config: {config_path}")
+    print(f"Google mail and calendar MCP server added to {client_label} config: {config_path}")
 
 
 def _find_executable() -> str:

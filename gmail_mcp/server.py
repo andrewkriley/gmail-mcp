@@ -117,11 +117,12 @@ async def _lifespan(_app: FastMCP):
 
 
 mcp = FastMCP(
-    "gmail",
+    "Google - mail and calendar",
     instructions=(
-        "Gmail via Gmail API v1. Two scope modes: trash (gmail.modify + gmail.settings.basic — "
-        "full mailbox + basic settings, delete ops use trash) and full (mail.google.com + "
-        "gmail.settings.basic — adds permanent delete). Default is full. "
+        "Gmail and Google Calendar via Google APIs. "
+        "Gmail scope modes: trash (gmail.modify + gmail.settings.basic — full mailbox + basic settings, "
+        "delete ops use trash), full (mail.google.com + gmail.settings.basic — adds permanent delete, default), "
+        "google (full Gmail + Google Calendar management tools). "
         "Tokens from `gmail-mcp-setup` or server startup; raw send payloads are base64url-encoded RFC 2822."
     ),
     lifespan=_lifespan,
