@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 
-from gmail_mcp.config import client_secret_path, oauth_scopes, token_path
+from gmail_mcp.config import client_secret_path, keychain_load_client_secret, oauth_scopes, token_path
 
 _FULL_MAIL_SCOPE = "https://mail.google.com/"
 
@@ -36,11 +37,17 @@ def load_credentials(
     tok = token_file or token_path()
     scopes = oauth_scopes()
 
-    if not secret.is_file():
+    # Resolve the client secret: keychain takes priority over the file.
+    keychain_json = keychain_load_client_secret()
+    if keychain_json:
+        client_config = json.loads(keychain_json)
+    elif secret.is_file():
+        client_config = json.loads(secret.read_text(encoding="utf-8"))
+    else:
         raise FileNotFoundError(
-            f"OAuth client secret not found at {secret}. "
-            "Download JSON credentials from Google Cloud Console (Desktop app) "
-            "and save as that path, or set GMAIL_MCP_CLIENT_SECRET."
+            f"OAuth client secret not found in Keychain or at {secret}. "
+            "Run `gmail-mcp-setup --keychain <path>` to store it in the Keychain, "
+            "or save the JSON file from Google Cloud Console at that path."
         )
 
     creds: Credentials | None = None
@@ -59,7 +66,7 @@ def load_credentials(
             return creds
         creds = None
 
-    flow = InstalledAppFlow.from_client_secrets_file(str(secret), scopes)
+    flow = InstalledAppFlow.from_client_config(client_config, scopes)
     if open_browser:
         creds = flow.run_local_server(port=0, open_browser=True)
     else:

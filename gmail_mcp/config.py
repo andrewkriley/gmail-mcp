@@ -5,6 +5,27 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+_KEYCHAIN_SERVICE = "gmail-mcp"
+_KEYCHAIN_CLIENT_SECRET = "client_secret"
+
+
+def keychain_save_client_secret(json_text: str) -> None:
+    import keyring
+    keyring.set_password(_KEYCHAIN_SERVICE, _KEYCHAIN_CLIENT_SECRET, json_text)
+
+
+def keychain_load_client_secret() -> str | None:
+    try:
+        import keyring
+        return keyring.get_password(_KEYCHAIN_SERVICE, _KEYCHAIN_CLIENT_SECRET)
+    except Exception:
+        return None
+
+
+def keychain_delete_client_secret() -> None:
+    import keyring
+    keyring.delete_password(_KEYCHAIN_SERVICE, _KEYCHAIN_CLIENT_SECRET)
+
 # Default XDG-style config directory
 _DEFAULT_STATE_DIR = Path.home() / ".config" / "gmail-mcp"
 
