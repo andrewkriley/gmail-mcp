@@ -22,6 +22,23 @@ def _json(data: Any) -> str:
     return json.dumps(data, indent=2, default=str)
 
 
+def _log(event: str) -> None:
+    """Write a timestamped connection event to GMAIL_MCP_LOG if set."""
+    import os
+    log_path = os.environ.get("GMAIL_MCP_LOG", "").strip()
+    if not log_path:
+        return
+    import datetime
+    import os as _os
+    ts = datetime.datetime.now().isoformat(timespec="seconds")
+    line = f"{ts} pid={_os.getpid()} {event}\n"
+    try:
+        with open(log_path, "a") as f:
+            f.write(line)
+    except OSError:
+        pass
+
+
 def _creds(ctx: Context) -> Credentials:
     lc = ctx.request_context.lifespan_context
     if not isinstance(lc, dict):
@@ -40,14 +57,14 @@ def _svc(ctx: Context):
 
 
 def _require_full_scope(ctx: Context) -> None:
-    """Raise a clear error when the stored token lacks the full mail scope."""
+    """Raise a clear error when the stored token lacks the full mail scope (permanent delete)."""
     creds = _creds(ctx)
     granted = set(creds.scopes or [])
     if _FULL_SCOPE not in granted:
         raise PermissionError(
-            "This operation requires the 'https://mail.google.com/' OAuth scope. "
+            "This operation requires the 'https://mail.google.com/' OAuth scope (full mode). "
             "Re-authenticate with GMAIL_MCP_SCOPE_MODE=full (or run gmail-mcp-setup --scope full) "
-            "and restart the server."
+            "and restart the server. In trash mode, use gmail_trash_message / gmail_trash_thread instead."
         )
 
 
@@ -75,17 +92,19 @@ async def _lifespan(_app: FastMCP):
         finally:
             sys.stdout = old_stdout
 
+    _log("connected")
     credentials = await anyio.to_thread.run_sync(_sync_load)
     yield {"credentials": credentials}
+    _log("disconnected")
 
 
 mcp = FastMCP(
     "gmail",
     instructions=(
-        "Gmail via Gmail API v1. Default OAuth scope is gmail.modify (read/write mailbox, labels, "
-        "threads, drafts, send). Account settings tools (filters, forwarding, send-as, watch) need "
-        "GMAIL_MCP_SCOPE_MODE=full. Tokens from `gmail-mcp-setup` or server startup; raw send payloads "
-        "are base64url-encoded RFC 2822."
+        "Gmail via Gmail API v1. Two scope modes: trash (gmail.modify + gmail.settings.basic — "
+        "full mailbox + basic settings, delete ops use trash) and full (mail.google.com + "
+        "gmail.settings.basic — adds permanent delete). Default is full. "
+        "Tokens from `gmail-mcp-setup` or server startup; raw send payloads are base64url-encoded RFC 2822."
     ),
     lifespan=_lifespan,
 )
@@ -93,44 +112,6 @@ mcp = FastMCP(
 _write = ToolAnnotations(destructiveHint=True)
 _read = ToolAnnotations(readOnlyHint=True)
 
-
-@mcp.tool(annotations=_read)
-def gmail_get_profile(ctx: Context) -> str:
-    """Return the current Gmail user id and email address."""
-    prof = _svc(ctx).users().getProfile(userId="me").execute()
-    return _json(prof)
-
-
-@mcp.tool(annotations=_read)
-def gmail_list_messages(
-    ctx: Context,
-    query: str | None = None,
-    label_ids: list[str] | None = None,
-    max_results: int = 50,
-    page_token: str | None = None,
-    include_spam_trash: bool = False,
-) -> str:
-    """List messages. Optional Gmail search `query` (same syntax as Gmail search box)."""
-    svc = _svc(ctx)
-    kwargs: dict[str, Any] = {
-        "userId": "me",
-        "maxResults": min(max(1, max_results), 500),
-        "includeSpamTrash": include_spam_trash,
-    }
-    if query:
-        kwargs["q"] = query
-    if label_ids:
-        kwargs["labelIds"] = label_ids
-    if page_token:
-        kwargs["pageToken"] = page_token
-    return _json(svc.users().messages().list(**kwargs).execute())
-
-
-@mcp.tool(annotations=_read)
-def gmail_get_message(ctx: Context, message_id: str, message_format: str = "full") -> str:
-    """Get a single message by id. message_format: minimal|full|raw|metadata."""
-    msg = _svc(ctx).users().messages().get(userId="me", id=message_id, format=message_format).execute()
-    return _json(msg)
 
 
 @mcp.tool(annotations=_read)
@@ -250,12 +231,6 @@ def gmail_batch_delete_messages(ctx: Context, message_ids: list[str]) -> str:
 
 
 @mcp.tool(annotations=_read)
-def gmail_list_labels(ctx: Context) -> str:
-    """List all labels."""
-    return _json(_svc(ctx).users().labels().list(userId="me").execute())
-
-
-@mcp.tool(annotations=_read)
 def gmail_get_label(ctx: Context, label_id: str) -> str:
     """Get metadata for one label by id."""
     return _json(_svc(ctx).users().labels().get(userId="me", id=label_id).execute())
@@ -328,14 +303,6 @@ def gmail_list_threads(
     return _json(svc.users().threads().list(**kwargs).execute())
 
 
-@mcp.tool(annotations=_read)
-def gmail_get_thread(ctx: Context, thread_id: str, message_format: str = "full") -> str:
-    """Get a thread by id."""
-    return _json(
-        _svc(ctx).users().threads().get(userId="me", id=thread_id, format=message_format).execute()
-    )
-
-
 @mcp.tool(annotations=_write)
 def gmail_modify_thread(
     ctx: Context,
@@ -370,15 +337,6 @@ def gmail_delete_thread(ctx: Context, thread_id: str) -> str:
     _require_full_scope(ctx)
     _svc(ctx).users().threads().delete(userId="me", id=thread_id).execute()
     return _json({"ok": True, "id": thread_id})
-
-
-@mcp.tool(annotations=_read)
-def gmail_list_drafts(ctx: Context, max_results: int = 50, page_token: str | None = None) -> str:
-    """List drafts."""
-    kwargs: dict[str, Any] = {"userId": "me", "maxResults": min(max(1, max_results), 500)}
-    if page_token:
-        kwargs["pageToken"] = page_token
-    return _json(_svc(ctx).users().drafts().list(**kwargs).execute())
 
 
 @mcp.tool(annotations=_read)

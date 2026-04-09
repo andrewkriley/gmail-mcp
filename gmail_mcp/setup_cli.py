@@ -69,15 +69,114 @@ def _resolve_client_secret(cli_value: str | None) -> Path:
 
 # Available Gmail OAuth scopes with descriptions
 GMAIL_SCOPES = {
-    "https://www.googleapis.com/auth/gmail.readonly":    "Read all resources and their metadata — no write operations.",
-    "https://www.googleapis.com/auth/gmail.send":        "Send messages only; no read or modify access.",
-    "https://www.googleapis.com/auth/gmail.compose":     "Create, read, update, and delete drafts; send messages.",
-    "https://www.googleapis.com/auth/gmail.insert":      "Insert and import messages.",
-    "https://www.googleapis.com/auth/gmail.labels":      "Create, read, update, and delete labels only.",
-    "https://www.googleapis.com/auth/gmail.metadata":    "Read resources metadata including labels, history, profile; no message body.",
-    "https://www.googleapis.com/auth/gmail.modify":      "All read/write except settings (default mailbox mode).",
-    "https://mail.google.com/":                          "Full account access including settings, filters, forwarding (full mode).",
+    "https://www.googleapis.com/auth/gmail.readonly":       "Read all resources and their metadata — no write operations.",
+    "https://www.googleapis.com/auth/gmail.send":           "Send messages only; no read or modify access.",
+    "https://www.googleapis.com/auth/gmail.compose":        "Create, read, update, and delete drafts; send messages.",
+    "https://www.googleapis.com/auth/gmail.insert":         "Insert and import messages.",
+    "https://www.googleapis.com/auth/gmail.labels":         "Create, read, update, and delete labels only.",
+    "https://www.googleapis.com/auth/gmail.metadata":       "Read resources metadata including labels, history, profile; no message body.",
+    "https://www.googleapis.com/auth/gmail.modify":         "All read/write except permanent delete and settings (used in trash mode).",
+    "https://www.googleapis.com/auth/gmail.settings.basic": "Manage basic settings: filters, vacation responder, signature, IMAP/POP.",
+    "https://mail.google.com/":                             "Full account access including permanent delete (used in full mode).",
 }
+
+
+# Each entry: (label, set_of_granting_scope_substrings, capabilities_when_missing)
+# A feature is available if ANY of the granting scopes (or the full-access scope) is present.
+_SCOPE_FEATURES: list[tuple[str, set[str], list[str]]] = [
+    (
+        "Read messages / threads / labels",
+        {"gmail.readonly", "gmail.modify", "gmail.compose", "mail.google.com"},
+        ["list messages", "get messages", "list threads", "get thread", "list labels"],
+    ),
+    (
+        "Send & modify / trash (trash mode)",
+        {"gmail.modify", "mail.google.com"},
+        ["send message", "trash messages", "modify labels", "create/update drafts"],
+    ),
+    (
+        "Basic settings (trash + full mode)",
+        {"gmail.settings.basic", "mail.google.com"},
+        ["manage filters", "vacation responder", "signature", "IMAP/POP settings"],
+    ),
+    (
+        "Permanent delete (full mode only)",
+        {"mail.google.com"},
+        ["permanently delete messages", "batch delete messages", "permanently delete threads"],
+    ),
+]
+
+
+def validate_access(token_file: Path | None = None) -> int:
+    """
+    Load the saved OAuth token, probe the Gmail API, and print a scope report.
+
+    Returns 0 on success, 1 on any failure.
+    """
+    from gmail_mcp.gmail_service import gmail_service
+
+    tok = token_file or token_path()
+
+    # Load credentials without triggering a new OAuth flow.
+    try:
+        creds = load_credentials(token_file=tok, open_browser=False)
+    except FileNotFoundError as exc:
+        print(f"\033[1;31m[validate]\033[0m Credentials not found: {exc}", file=sys.stderr)
+        print("Run  gmail-mcp-setup  first to authenticate.", file=sys.stderr)
+        return 1
+    except Exception as exc:
+        print(f"\033[1;31m[validate]\033[0m Failed to load credentials: {exc}", file=sys.stderr)
+        return 1
+
+    granted: set[str] = set(creds.scopes or [])
+    full_scope = "https://mail.google.com/"
+
+    # ── Probe the API ─────────────────────────────────────────────────────────
+    print("\n\033[1;34m[validate]\033[0m Testing Gmail API connectivity…")
+    try:
+        svc = gmail_service(creds)
+        profile = svc.users().getProfile(userId="me").execute()
+        email = profile.get("emailAddress", "<unknown>")
+        messages_total = profile.get("messagesTotal", "?")
+        print(f"\033[1;32m[validate]\033[0m Connected  ✓  ({email}, {messages_total} messages)")
+    except Exception as exc:
+        print(f"\033[1;31m[validate]\033[0m API call failed: {exc}", file=sys.stderr)
+        return 1
+
+    # ── Scope report ─────────────────────────────────────────────────────────
+    print("\n\033[1;34m[validate]\033[0m Granted OAuth scopes:")
+    if granted:
+        for s in sorted(granted):
+            print(f"  • {s}")
+    else:
+        print("  (none reported — token may be opaque)")
+
+    def _has_any_scope(granted: set[str], fragments: set[str]) -> bool:
+        """True if any granted scope URL contains any of the given fragments."""
+        return any(frag in g for frag in fragments for g in granted)
+
+    print("\n\033[1;34m[validate]\033[0m Feature availability:")
+    for label, granting_scopes, capabilities in _SCOPE_FEATURES:
+        has_scope = _has_any_scope(granted, granting_scopes)
+        status = "\033[1;32mavailable\033[0m" if has_scope else "\033[1;33munavailable\033[0m"
+        print(f"  {status}  {label}")
+        if not has_scope:
+            # Only print capabilities for unavailable features so the output stays concise.
+            for cap in capabilities:
+                print(f"             – {cap}")
+
+    # ── Re-auth hint if needed ────────────────────────────────────────────────
+    missing_full = full_scope not in granted
+    if missing_full:
+        print(
+            "\n\033[1;33m[validate]\033[0m Account-settings tools require full scope.\n"
+            "  Run:  gmail-mcp-setup\n"
+            "  Then restart your MCP client."
+        )
+    else:
+        print("\n\033[1;32m[validate]\033[0m All scopes look good.")
+
+    return 0
 
 
 def _print_scopes() -> None:
@@ -87,8 +186,8 @@ def _print_scopes() -> None:
         print(f"    {desc}")
     print(
         "\nPre-defined modes:\n"
+        "  full     →  mail.google.com (complete access) [default]\n"
         "  mailbox  →  gmail.modify (read/write messages, no account settings)\n"
-        "  full     →  mail.google.com (complete access)\n"
         "  custom   →  specify exact scopes with --scopes URL1,URL2,...\n"
     )
 
@@ -164,10 +263,11 @@ def main() -> None:
         description="Authenticate Gmail MCP with Google OAuth (saves token for the server).",
         epilog=(
             "OAuth scope modes:\n"
-            "  mailbox  gmail.modify — read/write messages, labels, threads, drafts, send;\n"
-            "           does NOT include account settings (filters, forwarding, send-as) or watch.\n"
-            "  full     mail.google.com — complete access including account settings.\n"
-            "  custom   Specify exact scope URLs with --scopes (run --list-scopes to see options).\n\n"
+            "  full   mail.google.com + gmail.settings.basic — complete access including\n"
+            "         permanent delete and basic settings (default).\n"
+            "  trash  gmail.modify + gmail.settings.basic — full mailbox read/write, send,\n"
+            "         labels, drafts, basic settings; delete operations use trash only.\n"
+            "  custom Specify exact scope URLs with --scopes (run --list-scopes to see options).\n\n"
             "Tip: if you just downloaded credentials from Google Cloud Console, run\n"
             "  gmail-mcp-setup\n"
             "without any arguments — it will find the file in ~/Downloads automatically."
@@ -230,11 +330,12 @@ def main() -> None:
     )
     p.add_argument(
         "--scope",
-        choices=["mailbox", "full", "custom"],
-        default=None,
+        choices=["trash", "full", "custom"],
+        default="full",
         metavar="MODE",
         help=(
-            "OAuth scope mode: mailbox (default, gmail.modify), full (mail.google.com), "
+            "OAuth scope mode: full (default, mail.google.com + settings.basic), "
+            "trash (gmail.modify + settings.basic, no permanent delete), "
             "or custom (specify URLs with --scopes). Run --list-scopes to see available scope URLs."
         ),
     )
@@ -250,12 +351,25 @@ def main() -> None:
         action="store_true",
         help="Print available Gmail OAuth scope URLs and exit.",
     )
+    p.add_argument(
+        "--validate",
+        action="store_true",
+        help=(
+            "Test the saved OAuth token against the Gmail API and print a scope/feature "
+            "availability report. Exits 0 on success, 1 on failure."
+        ),
+    )
     args = p.parse_args()
 
     # --list-scopes: print available scope URLs and exit
     if args.list_scopes:
         _print_scopes()
         sys.exit(0)
+
+    # --validate: probe the API and report scope coverage, then exit
+    if args.validate:
+        tok = Path(args.token) if args.token else None
+        sys.exit(validate_access(token_file=tok))
 
     # --delete-keychain: remove stored secret and exit
     if args.delete_keychain:
@@ -283,7 +397,7 @@ def main() -> None:
             p.error("--scope custom requires --scopes URL1,URL2,... (run --list-scopes to see options)")
         scope_env["GMAIL_MCP_SCOPES"] = args.scopes
         os.environ["GMAIL_MCP_SCOPES"] = args.scopes
-    elif args.scope in ("full", "mailbox"):
+    elif args.scope in ("full", "trash"):
         scope_env["GMAIL_MCP_SCOPE_MODE"] = args.scope
         os.environ["GMAIL_MCP_SCOPE_MODE"] = args.scope
     elif args.scopes:

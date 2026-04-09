@@ -2,12 +2,13 @@
 # gmail-mcp installer — macOS & Ubuntu
 # Creates a self-contained .venv inside the repo directory.
 # Usage:
-#   bash install.sh                    # auto-detect (uv preferred, then pip)
+#   bash install.sh                    # auto-detect clients, uv preferred
 #   bash install.sh --no-setup         # install only, skip OAuth setup
 #   bash install.sh --headless         # OAuth via printed URL (no browser)
-#   bash install.sh --claude-desktop   # write MCP config to Claude Desktop
-#   bash install.sh --claude-code      # write MCP config to Claude Code (~/.claude.json)
-#   bash install.sh --no-client        # skip client config prompt
+#   bash install.sh --claude-desktop   # force MCP config into Claude Desktop
+#   bash install.sh --claude-code      # force MCP config into Claude Code (~/.claude.json)
+#   bash install.sh --no-client        # skip client config entirely
+#   bash install.sh --change-scope     # prompt to change OAuth scope after setup
 #   bash install.sh --fresh            # wipe credentials & MCP config, then reinstall from scratch
 set -euo pipefail
 
@@ -18,7 +19,8 @@ HEADLESS=0
 INSTALL_CLAUDE_DESKTOP=0
 INSTALL_CLAUDE_CODE=0
 FRESH=0
-# -1 = prompt interactively, 0 = skip, 1 = already set via flags
+CHANGE_SCOPE=0
+# -1 = auto-detect, 0 = skip, 1 = already set via flags
 CLIENT_MODE=-1
 
 for arg in "$@"; do
@@ -28,9 +30,10 @@ for arg in "$@"; do
     --claude-desktop)  INSTALL_CLAUDE_DESKTOP=1; CLIENT_MODE=1 ;;
     --claude-code)     INSTALL_CLAUDE_CODE=1;    CLIENT_MODE=1 ;;
     --no-client)       CLIENT_MODE=0 ;;
+    --change-scope)    CHANGE_SCOPE=1 ;;
     --fresh)           FRESH=1 ;;
     -h|--help)
-      sed -n '2,11p' "$0" | sed 's/^# //'
+      sed -n '2,12p' "$0" | sed 's/^# //'
       exit 0
       ;;
   esac
@@ -178,26 +181,22 @@ _find_client_secret() {
 
 # ── Client config selection ───────────────────────────────────────────────────
 
-_prompt_client_selection() {
-  # Only prompt when stdin is a terminal
-  if [[ ! -t 0 ]]; then
-    return
+_auto_detect_clients() {
+  local desktop_cfg="$HOME/Library/Application Support/Claude/claude_desktop_config.json"
+  local code_cfg="$HOME/.claude.json"
+
+  if [[ -f "$desktop_cfg" ]]; then
+    INSTALL_CLAUDE_DESKTOP=1
+    info "Detected Claude Desktop — will configure automatically."
   fi
-  echo ""
-  echo "Configure MCP client automatically?"
-  echo "  1) Claude Desktop"
-  echo "  2) Claude Code  (~/.claude.json)"
-  echo "  3) Both"
-  echo "  4) Skip  (I'll edit the config manually)"
-  printf "Choice [1-4]: "
-  local choice
-  read -r choice
-  case "$choice" in
-    1) INSTALL_CLAUDE_DESKTOP=1 ;;
-    2) INSTALL_CLAUDE_CODE=1 ;;
-    3) INSTALL_CLAUDE_DESKTOP=1; INSTALL_CLAUDE_CODE=1 ;;
-    *) ;;  # skip
-  esac
+  if [[ -f "$code_cfg" ]] || command -v claude &>/dev/null; then
+    INSTALL_CLAUDE_CODE=1
+    info "Detected Claude Code — will configure automatically."
+  fi
+
+  if [[ "$INSTALL_CLAUDE_DESKTOP" -eq 0 && "$INSTALL_CLAUDE_CODE" -eq 0 ]]; then
+    info "No MCP client detected — will print config for manual setup."
+  fi
 }
 
 _build_setup_flags() {
@@ -317,25 +316,66 @@ if [[ "$RUN_SETUP" -eq 1 ]]; then
   if [[ -z "$SECRET" ]]; then
     warn "OAuth client secret not found — skipping authentication."
     echo ""
-    echo "  To complete setup:"
-    echo "    1. Go to https://console.cloud.google.com/apis/credentials"
-    echo "       → Create credentials → OAuth client ID → Desktop app → Download JSON"
-    echo "    2. Place the file in ~/.config/gmail-mcp/client_secret.json"
-    echo "       (or leave it in ~/Downloads — the name client_secret*.json is enough)"
-    echo "    3. Run: $GMAIL_MCP_SETUP_BIN --print-config"
+    echo "  ┌─ To complete setup ───────────────────────────────────────────────────┐"
+    echo "  │                                                                        │"
+    echo "  │  Step 1 — Create a Google Cloud project (if you don't have one):      │"
+    echo "  │    https://console.cloud.google.com/                                   │"
+    echo "  │    → Select or create a project                                        │"
+    echo "  │                                                                        │"
+    echo "  │  Step 2 — Enable the Gmail API:                                        │"
+    echo "  │    https://console.cloud.google.com/apis/library/gmail.googleapis.com  │"
+    echo "  │    → Click 'Enable'                                                    │"
+    echo "  │                                                                        │"
+    echo "  │  Step 3 — Configure the OAuth consent screen:                          │"
+    echo "  │    https://console.cloud.google.com/apis/credentials/consent           │"
+    echo "  │    → User Type: External → Create                                      │"
+    echo "  │    → Fill in App name + support email → Save and Continue              │"
+    echo "  │    → Add your Google account as a Test User                            │"
+    echo "  │      (required if the app stays in Testing mode)                       │"
+    echo "  │                                                                        │"
+    echo "  │  Step 4 — Create OAuth credentials:                                    │"
+    echo "  │    https://console.cloud.google.com/apis/credentials                   │"
+    echo "  │    → Create Credentials → OAuth client ID                              │"
+    echo "  │    → Application type: Desktop app → Create                            │"
+    echo "  │    → Download JSON (button on the right)                               │"
+    echo "  │                                                                        │"
+    echo "  │  Step 5 — Re-run the installer:                                        │"
+    echo "  │    Leave the downloaded file in ~/Downloads (client_secret*.json), or  │"
+    echo "  │    move it to ~/.config/gmail-mcp/client_secret.json, then run:        │"
+    echo "  │      bash install.sh                                                   │"
+    echo "  │                                                                        │"
+    echo "  └────────────────────────────────────────────────────────────────────────┘"
     echo ""
   else
     info "Found credentials: $SECRET"
-    [[ "$CLIENT_MODE" -eq -1 ]] && _prompt_client_selection
+    [[ "$CLIENT_MODE" -eq -1 ]] && _auto_detect_clients
     info "Running OAuth setup…"
     # shellcheck disable=SC2046
     "$GMAIL_MCP_SETUP_BIN" $(_build_setup_flags)
-    _prompt_scope_change
+    [[ "$CHANGE_SCOPE" -eq 1 ]] && _prompt_scope_change
+
+    # ── Validate scope access after successful OAuth ──────────────────────────
+    echo ""
+    info "Validating Gmail API access…"
+    if ! "$GMAIL_MCP_SETUP_BIN" --validate; then
+      warn "Validation failed — re-running OAuth with full scope to resolve…"
+      local fix_flags=()
+      [[ "$HEADLESS" -eq 1 ]]              && fix_flags+=(--no-browser)
+      [[ "$INSTALL_CLAUDE_DESKTOP" -eq 1 ]] && fix_flags+=(--install-claude-desktop)
+      [[ "$INSTALL_CLAUDE_CODE" -eq 1 ]]    && fix_flags+=(--install-claude-code)
+      if [[ "$INSTALL_CLAUDE_DESKTOP" -eq 0 && "$INSTALL_CLAUDE_CODE" -eq 0 ]]; then
+        fix_flags+=(--print-config)
+      fi
+      "$GMAIL_MCP_SETUP_BIN" --scope full "${fix_flags[@]}"
+      echo ""
+      info "Re-validating after re-auth…"
+      "$GMAIL_MCP_SETUP_BIN" --validate || warn "Validation still failing — check credentials and try again."
+    fi
   fi
 else
   ok "Skipped OAuth setup (--no-setup). Run the following when ready:"
   echo "  $GMAIL_MCP_SETUP_BIN --print-config"
-  _prompt_scope_change
+  [[ "$CHANGE_SCOPE" -eq 1 ]] && _prompt_scope_change
 fi
 
 # ── Done ──────────────────────────────────────────────────────────────────────
