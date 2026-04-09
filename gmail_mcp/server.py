@@ -53,14 +53,27 @@ def _require_full_scope(ctx: Context) -> None:
 
 @asynccontextmanager
 async def _lifespan(_app: FastMCP):
-    """Load OAuth token at startup (opens browser if first run)."""
+    """Load OAuth token at startup (opens browser if first run).
+
+    Stdout is redirected to stderr during credential loading because this
+    server uses stdio transport (stdout = JSON-RPC channel).  Any print()
+    call inside the OAuth library (e.g. the authorization-URL prompt in
+    InstalledAppFlow.run_local_server) would otherwise emit a bare line that
+    the MCP client tries to parse as JSON and fails with EOF/invalid-JSON.
+    """
+    import sys
 
     def _sync_load() -> Credentials:
-        return load_credentials(
-            client_secret_file=client_secret_path(),
-            token_file=token_path(),
-            open_browser=True,
-        )
+        old_stdout = sys.stdout
+        sys.stdout = sys.stderr
+        try:
+            return load_credentials(
+                client_secret_file=client_secret_path(),
+                token_file=token_path(),
+                open_browser=True,
+            )
+        finally:
+            sys.stdout = old_stdout
 
     credentials = await anyio.to_thread.run_sync(_sync_load)
     yield {"credentials": credentials}
