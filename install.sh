@@ -238,7 +238,7 @@ except Exception:
       [[ -n "$result" ]] && { echo "$result"; return; }
     fi
   done
-  echo "mailbox"
+  echo "full"
 }
 
 _print_scope_description() {
@@ -279,17 +279,19 @@ _prompt_scope_change() {
   printf "  \033[1;36m%s\033[0m\n" "$(_print_scope_description "$current")"
   echo ""
   echo "Change Gmail scope?"
-  echo "  1) mailbox  — gmail.modify (default; read/write messages, no account settings)"
-  echo "  2) full     — mail.google.com (complete access including account settings)"
-  echo "  3) Keep current scope"
-  printf "Choice [1-3]: "
+  echo "  1) trash    — gmail.modify (read/write messages, no account settings, no permanent delete)"
+  echo "  2) full     — mail.google.com (complete Gmail access including account settings) [default]"
+  echo "  3) google   — full Gmail + Google Calendar management tools"
+  echo "  4) Keep current scope"
+  printf "Choice [1-4]: "
   local choice
   read -r choice
 
   local new_scope=""
   case "$choice" in
-    1) new_scope="mailbox" ;;
+    1) new_scope="trash" ;;
     2) new_scope="full" ;;
+    3) new_scope="google" ;;
     *) return ;;  # keep current
   esac
 

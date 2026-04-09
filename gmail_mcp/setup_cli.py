@@ -104,6 +104,11 @@ _SCOPE_FEATURES: list[tuple[str, set[str], list[str]]] = [
         {"mail.google.com"},
         ["permanently delete messages", "batch delete messages", "permanently delete threads"],
     ),
+    (
+        "Google Calendar management (google mode only)",
+        {"calendar"},
+        ["create/update/delete calendars", "clear calendar", "manage ACL sharing", "move events", "quick-add events"],
+    ),
 ]
 
 
@@ -186,8 +191,9 @@ def _print_scopes() -> None:
         print(f"    {desc}")
     print(
         "\nPre-defined modes:\n"
-        "  full     →  mail.google.com (complete access) [default]\n"
-        "  mailbox  →  gmail.modify (read/write messages, no account settings)\n"
+        "  full     →  mail.google.com + gmail.settings.basic (complete Gmail access) [default]\n"
+        "  trash    →  gmail.modify + gmail.settings.basic (no permanent delete)\n"
+        "  google   →  full Gmail + calendar (adds Google Calendar management tools)\n"
         "  custom   →  specify exact scopes with --scopes URL1,URL2,...\n"
     )
 
@@ -267,6 +273,8 @@ def main() -> None:
             "         permanent delete and basic settings (default).\n"
             "  trash  gmail.modify + gmail.settings.basic — full mailbox read/write, send,\n"
             "         labels, drafts, basic settings; delete operations use trash only.\n"
+            "  google full Gmail (same as full) + calendar — adds Google Calendar management\n"
+            "         tools: create/update/delete calendars, ACL sharing, quick-add events.\n"
             "  custom Specify exact scope URLs with --scopes (run --list-scopes to see options).\n\n"
             "Tip: if you just downloaded credentials from Google Cloud Console, run\n"
             "  gmail-mcp-setup\n"
@@ -330,12 +338,13 @@ def main() -> None:
     )
     p.add_argument(
         "--scope",
-        choices=["trash", "full", "custom"],
+        choices=["trash", "full", "google", "custom"],
         default="full",
         metavar="MODE",
         help=(
             "OAuth scope mode: full (default, mail.google.com + settings.basic), "
             "trash (gmail.modify + settings.basic, no permanent delete), "
+            "google (full Gmail + Google Calendar management tools), "
             "or custom (specify URLs with --scopes). Run --list-scopes to see available scope URLs."
         ),
     )
@@ -397,7 +406,7 @@ def main() -> None:
             p.error("--scope custom requires --scopes URL1,URL2,... (run --list-scopes to see options)")
         scope_env["GMAIL_MCP_SCOPES"] = args.scopes
         os.environ["GMAIL_MCP_SCOPES"] = args.scopes
-    elif args.scope in ("full", "trash"):
+    elif args.scope in ("full", "trash", "google"):
         scope_env["GMAIL_MCP_SCOPE_MODE"] = args.scope
         os.environ["GMAIL_MCP_SCOPE_MODE"] = args.scope
     elif args.scopes:

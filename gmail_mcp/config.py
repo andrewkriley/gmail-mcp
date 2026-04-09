@@ -76,17 +76,26 @@ _SCOPE_FULL = [
     "https://mail.google.com/",
     "https://www.googleapis.com/auth/gmail.settings.basic",
 ]
+_SCOPE_GOOGLE = [
+    "https://mail.google.com/",
+    "https://www.googleapis.com/auth/gmail.settings.basic",
+    "https://www.googleapis.com/auth/calendar",
+]
+
+CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar"
 
 
 def oauth_scopes() -> list[str]:
     """
     Scopes requested at OAuth time.
 
-    - GMAIL_MCP_SCOPE_MODE=trash (default): gmail.modify + gmail.settings.basic —
-      full mailbox read/write, labels, threads, drafts, send, basic settings
-      (filters, vacation, signature, IMAP/POP); delete operations use trash only.
-    - GMAIL_MCP_SCOPE_MODE=full: mail.google.com/ + gmail.settings.basic —
+    - GMAIL_MCP_SCOPE_MODE=trash: gmail.modify + gmail.settings.basic —
+      full mailbox read/write, labels, threads, drafts, send, basic settings;
+      delete operations use trash only.
+    - GMAIL_MCP_SCOPE_MODE=full (default): mail.google.com/ + gmail.settings.basic —
       everything in trash mode plus permanent delete.
+    - GMAIL_MCP_SCOPE_MODE=google: full Gmail + calendar —
+      everything in full mode plus Google Calendar management tools.
 
     Override with comma-separated GMAIL_MCP_SCOPES (non-empty) to set exact URLs.
     """
@@ -95,12 +104,14 @@ def oauth_scopes() -> list[str]:
         return [s.strip() for s in raw.split(",") if s.strip()]
 
     mode = os.environ.get("GMAIL_MCP_SCOPE_MODE", "full").strip().lower()
+    if mode == "google":
+        return list(_SCOPE_GOOGLE)
     if mode in ("full", "admin", "all"):
         return list(_SCOPE_FULL)
     if mode == "trash":
         return list(_SCOPE_TRASH)
     raise ValueError(
-        f"Invalid GMAIL_MCP_SCOPE_MODE={mode!r}. Use 'trash' or 'full' (default)."
+        f"Invalid GMAIL_MCP_SCOPE_MODE={mode!r}. Use 'trash', 'full' (default), or 'google'."
     )
 
 

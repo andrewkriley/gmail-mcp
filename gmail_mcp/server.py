@@ -14,7 +14,8 @@ from mcp.server.fastmcp import Context, FastMCP
 from mcp.types import ToolAnnotations
 
 from gmail_mcp.auth import load_credentials
-from gmail_mcp.config import client_secret_path, token_path
+from gmail_mcp.calendar_service import calendar_service
+from gmail_mcp.config import CALENDAR_SCOPE, client_secret_path, token_path
 from gmail_mcp.gmail_service import gmail_service
 
 
@@ -66,6 +67,23 @@ def _require_full_scope(ctx: Context) -> None:
             "Re-authenticate with GMAIL_MCP_SCOPE_MODE=full (or run gmail-mcp-setup --scope full) "
             "and restart the server. In trash mode, use gmail_trash_message / gmail_trash_thread instead."
         )
+
+
+def _require_calendar_scope(ctx: Context) -> None:
+    """Raise a clear error when the stored token lacks the Google Calendar scope."""
+    creds = _creds(ctx)
+    granted = set(creds.scopes or [])
+    if CALENDAR_SCOPE not in granted:
+        raise PermissionError(
+            "This operation requires the 'https://www.googleapis.com/auth/calendar' OAuth scope. "
+            "Re-authenticate with GMAIL_MCP_SCOPE_MODE=google (or run gmail-mcp-setup --scope google) "
+            "and restart the server."
+        )
+
+
+def _cal_svc(ctx: Context):
+    _require_calendar_scope(ctx)
+    return calendar_service(_creds(ctx))
 
 
 @asynccontextmanager
@@ -523,6 +541,142 @@ def gmail_stop_watch(ctx: Context) -> str:
     """Stop receiving push notifications for the mailbox."""
     _svc(ctx).users().stop(userId="me").execute()
     return _json({"ok": True})
+
+
+# ── Google Calendar tools (require GMAIL_MCP_SCOPE_MODE=google) ───────────────
+
+@mcp.tool(annotations=_write)
+def gcal_create_calendar(ctx: Context, summary: str, description: str | None = None, time_zone: str | None = None) -> str:
+    """Create a new Google Calendar. Returns the created calendar resource."""
+    body: dict[str, Any] = {"summary": summary}
+    if description:
+        body["description"] = description
+    if time_zone:
+        body["timeZone"] = time_zone
+    return _json(_cal_svc(ctx).calendars().insert(body=body).execute())
+
+
+@mcp.tool(annotations=_write)
+def gcal_update_calendar(
+    ctx: Context,
+    calendar_id: str,
+    summary: str | None = None,
+    description: str | None = None,
+    time_zone: str | None = None,
+) -> str:
+    """Update metadata on a calendar (summary, description, time zone). Use 'primary' for your main calendar."""
+    body: dict[str, Any] = {}
+    if summary is not None:
+        body["summary"] = summary
+    if description is not None:
+        body["description"] = description
+    if time_zone is not None:
+        body["timeZone"] = time_zone
+    return _json(_cal_svc(ctx).calendars().patch(calendarId=calendar_id, body=body).execute())
+
+
+@mcp.tool(annotations=_write)
+def gcal_delete_calendar(ctx: Context, calendar_id: str) -> str:
+    """Permanently delete a calendar and all its events. Cannot be undone."""
+    _cal_svc(ctx).calendars().delete(calendarId=calendar_id).execute()
+    return _json({"ok": True, "calendarId": calendar_id})
+
+
+@mcp.tool(annotations=_write)
+def gcal_clear_calendar(ctx: Context, calendar_id: str) -> str:
+    """Remove all events from a calendar without deleting the calendar itself. Only works on primary-type calendars."""
+    _cal_svc(ctx).calendars().clear(calendarId=calendar_id).execute()
+    return _json({"ok": True, "calendarId": calendar_id})
+
+
+@mcp.tool(annotations=_write)
+def gcal_update_calendar_list_entry(
+    ctx: Context,
+    calendar_id: str,
+    color_id: str | None = None,
+    background_color: str | None = None,
+    foreground_color: str | None = None,
+    hidden: bool | None = None,
+    selected: bool | None = None,
+    default_reminders: str | None = None,
+) -> str:
+    """Update your personal view of a subscribed calendar (color, visibility, reminders).
+    color_id: one of Google's palette IDs (e.g. '1'–'11'). background_color/foreground_color: hex CSS colors.
+    default_reminders: JSON array of reminder objects, e.g. '[{"method":"popup","minutes":10}]'."""
+    body: dict[str, Any] = {}
+    if color_id is not None:
+        body["colorId"] = color_id
+    if background_color is not None:
+        body["backgroundColor"] = background_color
+    if foreground_color is not None:
+        body["foregroundColor"] = foreground_color
+    if hidden is not None:
+        body["hidden"] = hidden
+    if selected is not None:
+        body["selected"] = selected
+    if default_reminders is not None:
+        body["defaultReminders"] = json.loads(default_reminders)
+    return _json(_cal_svc(ctx).calendarList().patch(calendarId=calendar_id, body=body).execute())
+
+
+@mcp.tool(annotations=_write)
+def gcal_remove_calendar(ctx: Context, calendar_id: str) -> str:
+    """Unsubscribe from / remove a calendar from your calendar list. Does not delete the calendar itself."""
+    _cal_svc(ctx).calendarList().delete(calendarId=calendar_id).execute()
+    return _json({"ok": True, "calendarId": calendar_id})
+
+
+@mcp.tool(annotations=_read)
+def gcal_list_acl(ctx: Context, calendar_id: str) -> str:
+    """List all access control rules for a calendar (who has access and at what role)."""
+    return _json(_cal_svc(ctx).acl().list(calendarId=calendar_id).execute())
+
+
+@mcp.tool(annotations=_write)
+def gcal_create_acl(ctx: Context, calendar_id: str, role: str, scope_type: str, scope_value: str | None = None) -> str:
+    """Share a calendar by adding an ACL rule.
+    role: 'reader' | 'writer' | 'owner'.
+    scope_type: 'user' | 'group' | 'domain' | 'default'.
+    scope_value: email address (user/group), domain name, or omit for 'default'."""
+    scope: dict[str, Any] = {"type": scope_type}
+    if scope_value:
+        scope["value"] = scope_value
+    body = {"role": role, "scope": scope}
+    return _json(_cal_svc(ctx).acl().insert(calendarId=calendar_id, body=body).execute())
+
+
+@mcp.tool(annotations=_write)
+def gcal_update_acl(ctx: Context, calendar_id: str, rule_id: str, role: str) -> str:
+    """Change the role on an existing ACL rule. role: 'reader' | 'writer' | 'owner'."""
+    return _json(_cal_svc(ctx).acl().update(calendarId=calendar_id, ruleId=rule_id, body={"role": role}).execute())
+
+
+@mcp.tool(annotations=_write)
+def gcal_delete_acl(ctx: Context, calendar_id: str, rule_id: str) -> str:
+    """Revoke access by deleting an ACL rule."""
+    _cal_svc(ctx).acl().delete(calendarId=calendar_id, ruleId=rule_id).execute()
+    return _json({"ok": True, "calendarId": calendar_id, "ruleId": rule_id})
+
+
+@mcp.tool(annotations=_write)
+def gcal_move_event(ctx: Context, calendar_id: str, event_id: str, destination_calendar_id: str) -> str:
+    """Move an event from one calendar to another. Returns the updated event."""
+    return _json(
+        _cal_svc(ctx).events().move(
+            calendarId=calendar_id, eventId=event_id, destination=destination_calendar_id
+        ).execute()
+    )
+
+
+@mcp.tool(annotations=_write)
+def gcal_quick_add(ctx: Context, calendar_id: str, text: str, send_notifications: bool = False) -> str:
+    """Create an event from a natural-language string (e.g. 'Lunch with Sam on Tuesday at noon').
+    calendar_id: target calendar, use 'primary' for your main calendar."""
+    return _json(
+        _cal_svc(ctx).events().quickAdd(
+            calendarId=calendar_id, text=text, sendNotifications=send_notifications
+        ).execute()
+    )
 
 
 def main() -> None:
