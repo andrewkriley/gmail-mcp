@@ -8,6 +8,7 @@
 #   bash install.sh --claude-desktop   # write MCP config to Claude Desktop
 #   bash install.sh --claude-code      # write MCP config to Claude Code (~/.claude.json)
 #   bash install.sh --no-client        # skip client config prompt
+#   bash install.sh --fresh            # wipe credentials & MCP config, then reinstall from scratch
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -16,6 +17,7 @@ RUN_SETUP=1
 HEADLESS=0
 INSTALL_CLAUDE_DESKTOP=0
 INSTALL_CLAUDE_CODE=0
+FRESH=0
 # -1 = prompt interactively, 0 = skip, 1 = already set via flags
 CLIENT_MODE=-1
 
@@ -26,8 +28,9 @@ for arg in "$@"; do
     --claude-desktop)  INSTALL_CLAUDE_DESKTOP=1; CLIENT_MODE=1 ;;
     --claude-code)     INSTALL_CLAUDE_CODE=1;    CLIENT_MODE=1 ;;
     --no-client)       CLIENT_MODE=0 ;;
+    --fresh)           FRESH=1 ;;
     -h|--help)
-      sed -n '2,10p' "$0" | sed 's/^# //'
+      sed -n '2,11p' "$0" | sed 's/^# //'
       exit 0
       ;;
   esac
@@ -117,6 +120,48 @@ GMAIL_MCP_SETUP_BIN="$VENV_DIR/bin/gmail-mcp-setup"
 [[ -x "$GMAIL_MCP_BIN" ]] || die "gmail-mcp binary not found after install: $GMAIL_MCP_BIN"
 ok "Installed via $INSTALLER into $VENV_DIR ✓"
 
+# ── Fresh install: wipe credentials & MCP config entries ─────────────────────
+
+_purge_credentials() {
+  info "Purging existing credentials and MCP config entries…"
+
+  # Remove OAuth token from Keychain (ignore error if not present)
+  "$GMAIL_MCP_SETUP_BIN" --delete-keychain-token 2>/dev/null || true
+
+  # Remove client secret from Keychain (ignore error if not present)
+  "$GMAIL_MCP_SETUP_BIN" --delete-keychain 2>/dev/null || true
+
+  # Remove plaintext credential files
+  local state_dir="$HOME/.config/gmail-mcp"
+  rm -f "$state_dir/token.json" "$state_dir/client_secret.json"
+
+  # Remove the gmail entry from any installed MCP client configs
+  local desktop_cfg="$HOME/Library/Application Support/Claude/claude_desktop_config.json"
+  local code_cfg="$HOME/.claude.json"
+  for cfg in "$desktop_cfg" "$code_cfg"; do
+    if [[ -f "$cfg" ]]; then
+      "$PYTHON" - "$cfg" <<'PYEOF'
+import json, sys
+path = sys.argv[1]
+try:
+    data = json.loads(open(path).read())
+    removed = data.get("mcpServers", {}).pop("gmail", None)
+    if removed is not None:
+        open(path, "w").write(json.dumps(data, indent=2) + "\n")
+        print(f"Removed gmail MCP entry from {path}")
+except Exception as e:
+    print(f"Warning: could not update {path}: {e}", file=sys.stderr)
+PYEOF
+    fi
+  done
+
+  ok "Credentials purged ✓"
+}
+
+if [[ "$FRESH" -eq 1 ]]; then
+  _purge_credentials
+fi
+
 # ── OAuth setup ───────────────────────────────────────────────────────────────
 
 # Locate a client_secret*.json in the same places setup_cli.py looks.
@@ -167,6 +212,106 @@ _build_setup_flags() {
   echo "${flags[@]+"${flags[@]}"}"
 }
 
+# ── Scope detection & change ──────────────────────────────────────────────────
+
+# Read the current Gmail scope from an installed MCP config file.
+# Returns one of: "mailbox", "full", or "custom: <URL1>,<URL2>,..."
+_detect_current_scope() {
+  local code_cfg="$HOME/.claude.json"
+  local desktop_cfg="$HOME/Library/Application Support/Claude/claude_desktop_config.json"
+  for cfg_path in "$code_cfg" "$desktop_cfg"; do
+    if [[ -f "$cfg_path" ]]; then
+      local result
+      result=$("$PYTHON" -c "
+import json, sys
+try:
+    data = json.loads(open(sys.argv[1]).read())
+    env = data.get('mcpServers', {}).get('gmail', {}).get('env', {})
+    if 'GMAIL_MCP_SCOPES' in env:
+        print('custom: ' + env['GMAIL_MCP_SCOPES'])
+    elif 'GMAIL_MCP_SCOPE_MODE' in env:
+        print(env['GMAIL_MCP_SCOPE_MODE'])
+    else:
+        print('mailbox')
+except Exception:
+    pass
+" "$cfg_path" 2>/dev/null)
+      [[ -n "$result" ]] && { echo "$result"; return; }
+    fi
+  done
+  echo "mailbox"
+}
+
+_print_scope_description() {
+  case "$1" in
+    mailbox) echo "mailbox  — gmail.modify (read/write messages, labels, drafts, send; no account settings)" ;;
+    full)    echo "full     — mail.google.com (complete access including filters, forwarding, settings)" ;;
+    custom:*) echo "custom   — ${1#custom: }" ;;
+    *)       echo "$1" ;;
+  esac
+}
+
+_print_restart_instructions() {
+  echo ""
+  ok "Scope updated. Restart your MCP client to apply the new OAuth token:"
+  echo ""
+  if [[ "$INSTALL_CLAUDE_DESKTOP" -eq 1 ]]; then
+    echo "  Claude Desktop: quit the app (⌘Q) and reopen it."
+  fi
+  if [[ "$INSTALL_CLAUDE_CODE" -eq 1 ]]; then
+    echo "  Claude Code:    exit and re-run 'claude' in your terminal."
+    echo "                  Or in an active session: /mcp  (to verify) then restart."
+  fi
+  if [[ "$INSTALL_CLAUDE_DESKTOP" -eq 0 && "$INSTALL_CLAUDE_CODE" -eq 0 ]]; then
+    echo "  Restart whichever MCP client you configured manually."
+  fi
+  echo ""
+}
+
+_prompt_scope_change() {
+  # Only prompt when stdin is a terminal
+  [[ ! -t 0 ]] && return
+
+  local current
+  current=$(_detect_current_scope)
+
+  echo ""
+  echo "Gmail scope currently configured:"
+  printf "  \033[1;36m%s\033[0m\n" "$(_print_scope_description "$current")"
+  echo ""
+  echo "Change Gmail scope?"
+  echo "  1) mailbox  — gmail.modify (default; read/write messages, no account settings)"
+  echo "  2) full     — mail.google.com (complete access including account settings)"
+  echo "  3) Keep current scope"
+  printf "Choice [1-3]: "
+  local choice
+  read -r choice
+
+  local new_scope=""
+  case "$choice" in
+    1) new_scope="mailbox" ;;
+    2) new_scope="full" ;;
+    *) return ;;  # keep current
+  esac
+
+  # Skip if already set to the chosen scope
+  if [[ "$current" == "$new_scope" ]]; then
+    info "Scope is already set to '$new_scope' — no change needed."
+    return
+  fi
+
+  info "Re-running OAuth with scope '$new_scope'…"
+  local flags=("--scope" "$new_scope")
+  [[ "$HEADLESS" -eq 1 ]]              && flags+=(--no-browser)
+  [[ "$INSTALL_CLAUDE_DESKTOP" -eq 1 ]] && flags+=(--install-claude-desktop)
+  [[ "$INSTALL_CLAUDE_CODE" -eq 1 ]]    && flags+=(--install-claude-code)
+  if [[ "$INSTALL_CLAUDE_DESKTOP" -eq 0 && "$INSTALL_CLAUDE_CODE" -eq 0 ]]; then
+    flags+=(--print-config)
+  fi
+  "$GMAIL_MCP_SETUP_BIN" "${flags[@]}"
+  _print_restart_instructions
+}
+
 if [[ "$RUN_SETUP" -eq 1 ]]; then
   SECRET=$(_find_client_secret)
   if [[ -z "$SECRET" ]]; then
@@ -185,10 +330,12 @@ if [[ "$RUN_SETUP" -eq 1 ]]; then
     info "Running OAuth setup…"
     # shellcheck disable=SC2046
     "$GMAIL_MCP_SETUP_BIN" $(_build_setup_flags)
+    _prompt_scope_change
   fi
 else
   ok "Skipped OAuth setup (--no-setup). Run the following when ready:"
   echo "  $GMAIL_MCP_SETUP_BIN --print-config"
+  _prompt_scope_change
 fi
 
 # ── Done ──────────────────────────────────────────────────────────────────────
