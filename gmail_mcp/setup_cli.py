@@ -12,10 +12,13 @@ from gmail_mcp.auth import load_credentials
 from gmail_mcp.config import (
     client_secret_path,
     keychain_delete_client_secret,
+    keychain_delete_token,
     keychain_load_client_secret,
+    keychain_load_token,
     keychain_save_client_secret,
     state_dir,
     token_path,
+    use_keychain_token,
 )
 
 # Candidate directories where Google Chrome / Firefox save downloads on each OS.
@@ -143,6 +146,11 @@ def main() -> None:
         action="store_true",
         help="Remove the client secret from the macOS Keychain and exit.",
     )
+    p.add_argument(
+        "--delete-keychain-token",
+        action="store_true",
+        help="Remove the OAuth token from the macOS Keychain and exit.",
+    )
     args = p.parse_args()
 
     # --delete-keychain: remove stored secret and exit
@@ -152,6 +160,15 @@ def main() -> None:
         else:
             keychain_delete_client_secret()
             print("Client secret removed from Keychain.")
+        sys.exit(0)
+
+    # --delete-keychain-token: remove stored OAuth token and exit
+    if args.delete_keychain_token:
+        if keychain_load_token() is None:
+            print("No OAuth token found in Keychain.")
+        else:
+            keychain_delete_token()
+            print("OAuth token removed from Keychain.")
         sys.exit(0)
 
     # Positional arg overrides --client-secret when both are given
@@ -188,7 +205,10 @@ def main() -> None:
         sys.exit(1)
 
     load_credentials(client_secret_file=secret if secret.is_file() else None, token_file=tok, open_browser=not args.no_browser)
-    print(f"Authentication complete. Token saved to {tok}.")
+    if use_keychain_token():
+        print("Authentication complete. Token saved to macOS Keychain (service=gmail-mcp).")
+    else:
+        print(f"Authentication complete. Token saved to {tok}.")
 
     if args.print_config:
         exe = _find_executable()

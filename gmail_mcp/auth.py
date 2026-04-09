@@ -9,7 +9,16 @@ from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 
-from gmail_mcp.config import client_secret_path, keychain_load_client_secret, oauth_scopes, token_path
+from gmail_mcp.config import (
+    client_secret_path,
+    keychain_delete_token,
+    keychain_load_client_secret,
+    keychain_load_token,
+    keychain_save_token,
+    oauth_scopes,
+    token_path,
+    use_keychain_token,
+)
 
 _FULL_MAIL_SCOPE = "https://mail.google.com/"
 
@@ -51,7 +60,16 @@ def load_credentials(
         )
 
     creds: Credentials | None = None
-    if tok.is_file():
+
+    # On macOS, prefer keychain over file; fall back to file for migration.
+    if use_keychain_token():
+        keychain_json = keychain_load_token()
+        if keychain_json:
+            creds = Credentials.from_authorized_user_info(json.loads(keychain_json), scopes)
+        elif tok.is_file():
+            # Migrate existing file token into keychain on first run.
+            creds = Credentials.from_authorized_user_file(str(tok), scopes)
+    elif tok.is_file():
         creds = Credentials.from_authorized_user_file(str(tok), scopes)
 
     granted = set(creds.scopes or []) if creds else set()
@@ -77,5 +95,12 @@ def load_credentials(
 
 
 def _save_token(creds: Credentials, tok: Path) -> None:
-    tok.parent.mkdir(parents=True, exist_ok=True)
-    tok.write_text(creds.to_json(), encoding="utf-8")
+    token_json = creds.to_json()
+    if use_keychain_token():
+        keychain_save_token(token_json)
+        # Remove the plaintext file if it exists to avoid stale copies.
+        if tok.is_file():
+            tok.unlink(missing_ok=True)
+    else:
+        tok.parent.mkdir(parents=True, exist_ok=True)
+        tok.write_text(token_json, encoding="utf-8")

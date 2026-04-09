@@ -3,10 +3,30 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 _KEYCHAIN_SERVICE = "gmail-mcp"
 _KEYCHAIN_CLIENT_SECRET = "client_secret"
+_KEYCHAIN_TOKEN = "token"
+
+
+def _keyring_available() -> bool:
+    try:
+        import keyring  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+def use_keychain_token() -> bool:
+    """Return True when OAuth token should be stored/read from the system keychain.
+
+    Enabled by default on macOS. Opt out by setting GMAIL_MCP_NO_KEYCHAIN=1.
+    """
+    if os.environ.get("GMAIL_MCP_NO_KEYCHAIN", "").strip() == "1":
+        return False
+    return sys.platform == "darwin" and _keyring_available()
 
 
 def keychain_save_client_secret(json_text: str) -> None:
@@ -25,6 +45,24 @@ def keychain_load_client_secret() -> str | None:
 def keychain_delete_client_secret() -> None:
     import keyring
     keyring.delete_password(_KEYCHAIN_SERVICE, _KEYCHAIN_CLIENT_SECRET)
+
+
+def keychain_save_token(json_text: str) -> None:
+    import keyring
+    keyring.set_password(_KEYCHAIN_SERVICE, _KEYCHAIN_TOKEN, json_text)
+
+
+def keychain_load_token() -> str | None:
+    try:
+        import keyring
+        return keyring.get_password(_KEYCHAIN_SERVICE, _KEYCHAIN_TOKEN)
+    except Exception:
+        return None
+
+
+def keychain_delete_token() -> None:
+    import keyring
+    keyring.delete_password(_KEYCHAIN_SERVICE, _KEYCHAIN_TOKEN)
 
 # Default XDG-style config directory
 _DEFAULT_STATE_DIR = Path.home() / ".config" / "gmail-mcp"
